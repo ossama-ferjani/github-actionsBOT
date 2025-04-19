@@ -1,32 +1,37 @@
-name: Auto-Approve PR Workflows
+name: Auto-Approve All Waiting Workflow Runs
 
 on:
   schedule:
-    - cron: '*/2 * * * *'  # Runs every 5 min — adjust as needed
+    - cron: '* * * * *'  # Runs every 5 minutes
 
 jobs:
-  approve:
+  auto-approve:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.BOT_PAT }}  # Your PAT with repo + workflow scopes
+      GH_TOKEN: ${{ secrets.BOT_PAT }}  # Stored in trusted repo
       TARGET_REPO: ossama-ferjani/devops-ci-cd-challenge
       GITHUB_API_URL: https://api.github.com
     steps:
-      - name: Approve pending PR workflows
-        run: |
-          echo "🔍 Checking for pending workflow runs on $TARGET_REPO"
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-          RUNS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs" \
-            | jq '.workflow_runs[] | select(.status=="waiting") | .id')
+      - name: Check and approve all waiting workflow runs
+        run: |
+          echo "🔍 Fetching workflow runs for $TARGET_REPO"
+
+          RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs")
+
+          RUNS=$(echo "$RESPONSE" | jq '.workflow_runs[] | select(.status=="waiting") | .id')
 
           COUNT=$(echo "$RUNS" | wc -w)
-          echo "🧪 Found $COUNT pending runs."
+          echo "🧪 Found $COUNT pending workflow run(s) needing approval."
 
-          for ID in $RUNS; do
-            echo "✅ Approving workflow run ID: $ID"
-            curl -X POST \
+          for RUN_ID in $RUNS; do
+            echo "✅ Approving run ID: $RUN_ID"
+            curl -s -X POST \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
-              "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs/$ID/approve"
+              "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs/$RUN_ID/approve"
           done
+
