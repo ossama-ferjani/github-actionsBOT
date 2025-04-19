@@ -3,7 +3,7 @@ name: Auto-Approve All Waiting Workflow Runs
 on:
   schedule:
     - cron: '* * * * *'  # Runs every 5 minutes
-
+  workflow_dispatch:
 jobs:
   auto-approve:
     runs-on: ubuntu-latest
