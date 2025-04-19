@@ -24,40 +24,71 @@ jobs:
           WORKFLOWS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             "$GITHUB_API_URL/repos/$TARGET_REPO/actions/workflows")
           
-          WORKFLOW_ID=$(echo "$WORKFLOWS" | jq -r '.workflows[] | select(.name=="'"$TARGET_WORKFLOW"'" or .path | endswith("/'"$TARGET_WORKFLOW"'.yaml") or .path | endswith("/'"$TARGET_WORKFLOW"'.yml")) | .id')
+          # Debug output to check structure
+          echo "Available workflows:"
+          echo "$WORKFLOWS" | jq -r '.workflows[] | {name: .name, path: .path, id: .id}'
+          
+          # More carefully match the workflow by name or path
+          WORKFLOW_ID=$(echo "$WORKFLOWS" | jq -r '.workflows[] | select(.name=="'"$TARGET_WORKFLOW"'" or ((.path | type) == "string" and (.path | contains("'"$TARGET_WORKFLOW"'")))) | .id' | head -1)
           
           if [ -z "$WORKFLOW_ID" ]; then
             echo "❌ Could not find workflow with name: $TARGET_WORKFLOW"
+            echo "💡 Getting all waiting runs instead..."
+            
+            # Get all waiting runs if we can't find the specific workflow
+            RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs?status=waiting")
+          else
+            echo "📋 Found workflow ID: $WORKFLOW_ID"
+            
+            # Get waiting runs for this specific workflow
+            RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              "$GITHUB_API_URL/repos/$TARGET_REPO/actions/workflows/$WORKFLOW_ID/runs?status=waiting")
+          fi
+          
+          # Check if response contains workflow runs
+          if ! echo "$RESPONSE" | jq -e '.workflow_runs' >/dev/null 2>&1; then
+            echo "⚠️ No workflow runs found in response"
+            echo "Response: $RESPONSE"
             exit 1
           fi
           
-          echo "📋 Found workflow ID: $WORKFLOW_ID"
-          
-          # Get all runs for this specific workflow that are waiting
-          RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            "$GITHUB_API_URL/repos/$TARGET_REPO/actions/workflows/$WORKFLOW_ID/runs")
-          
-          # Filter for waiting runs from fork
-          RUNS=$(echo "$RESPONSE" | jq '.workflow_runs[] | select(.status=="waiting") | .id')
+          # Filter for waiting runs
+          RUNS=$(echo "$RESPONSE" | jq -r '.workflow_runs[].id')
           COUNT=$(echo "$RUNS" | grep -v '^$' | wc -l)
           
           echo "🧪 Found $COUNT pending workflow run(s) needing approval."
           
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No waiting runs to approve."
+            exit 0
+          fi
+          
           echo "$RUNS" | while read -r RUN_ID; do
             if [ -n "$RUN_ID" ]; then
+              echo "Getting info for run ID: $RUN_ID"
               RUN_INFO=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
                 "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs/$RUN_ID")
               
-              HEAD_REPO=$(echo "$RUN_INFO" | jq -r '.head_repository.full_name')
+              # Check if waiting for approval
+              RUN_STATUS=$(echo "$RUN_INFO" | jq -r '.status')
+              if [ "$RUN_STATUS" != "waiting" ]; then
+                echo "⏭️ Skipping run ID: $RUN_ID (status: $RUN_STATUS, not waiting)"
+                continue
+              fi
               
-              if [ "$HEAD_REPO" != "$TARGET_REPO" ]; then
-                echo "✅ Approving run ID: $RUN_ID from fork: $HEAD_REPO"
-                curl -s -X POST \
-                  -H "Authorization: Bearer $GH_TOKEN" \
-                  -H "Accept: application/vnd.github+json" \
-                  "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs/$RUN_ID/approve"
+              # Approve all waiting runs (both fork and non-fork)
+              echo "✅ Approving run ID: $RUN_ID"
+              APPROVAL_RESPONSE=$(curl -s -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs/$RUN_ID/approve")
+              
+              # Check approval response
+              if [ -z "$APPROVAL_RESPONSE" ]; then
+                echo "✓ Successfully approved run ID: $RUN_ID"
               else
-                echo "ℹ️ Skipping run ID: $RUN_ID (not from a fork)"
+                echo "Response from approval: $APPROVAL_RESPONSE"
               fi
             fi
           done
