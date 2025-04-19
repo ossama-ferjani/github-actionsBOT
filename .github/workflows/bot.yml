@@ -14,24 +14,24 @@ jobs:
     steps:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
-
+      
       - name: Check and approve all waiting workflow runs
         run: |
           echo "🔍 Fetching workflow runs for $TARGET_REPO"
-
           RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs")
-
+          
           RUNS=$(echo "$RESPONSE" | jq '.workflow_runs[] | select(.status=="waiting") | .id')
-
-          COUNT=$(echo "$RUNS" | wc -w)
+          COUNT=$(echo "$RUNS" | grep -v '^$' | wc -l)
+          
           echo "🧪 Found $COUNT pending workflow run(s) needing approval."
-
-          for RUN_ID in $RUNS; do
-            echo "✅ Approving run ID: $RUN_ID"
-            curl -s -X POST \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs/$RUN_ID/approve"
+          
+          echo "$RUNS" | while read -r RUN_ID; do
+            if [ -n "$RUN_ID" ]; then
+              echo "✅ Approving run ID: $RUN_ID"
+              curl -s -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs/$RUN_ID/approve"
+            fi
           done
-
