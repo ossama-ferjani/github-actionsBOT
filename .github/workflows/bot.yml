@@ -1,0 +1,32 @@
+name: Auto-Approve PR Workflows
+
+on:
+  schedule:
+    - cron: '*/2 * * * *'  # Runs every 5 min — adjust as needed
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.BOT_PAT }}  # Your PAT with repo + workflow scopes
+      TARGET_REPO: ossama-ferjani/devops-ci-cd-challenge
+      GITHUB_API_URL: https://api.github.com
+    steps:
+      - name: Approve pending PR workflows
+        run: |
+          echo "🔍 Checking for pending workflow runs on $TARGET_REPO"
+
+          RUNS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs" \
+            | jq '.workflow_runs[] | select(.status=="waiting") | .id')
+
+          COUNT=$(echo "$RUNS" | wc -w)
+          echo "🧪 Found $COUNT pending runs."
+
+          for ID in $RUNS; do
+            echo "✅ Approving workflow run ID: $ID"
+            curl -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs/$ID/approve"
+          done
