@@ -10,7 +10,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.BOT_PAT }}  # Stored in trusted repo
       TARGET_REPO: ossama-ferjani/devops-ci-cd-challenge
-      TARGET_WORKFLOW: build-test-deploy
+      TARGET_WORKFLOW: CI/CD Challenge Pipeline
       GITHUB_API_URL: https://api.github.com
     steps:
       - name: Install jq
