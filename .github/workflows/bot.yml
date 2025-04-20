@@ -1,94 +1,143 @@
-name: Auto-Approve Forked Repo Workflow Runs
+name: Pipeline Auto Approval Bot
 
 on:
   schedule:
-    - cron: '* * * * *'  # Runs every 5 minutes
-  workflow_dispatch:
+    # Run every minute
+    - cron: '* * * * *'
+  workflow_dispatch: # Allow manual triggering
+
 jobs:
   auto-approve:
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.BOT_PAT }}  # Stored in trusted repo
-      TARGET_REPO: ossama-ferjani/devops-ci-cd-challenge
-      TARGET_WORKFLOW: CI/CD Challenge Pipeline
-      GITHUB_API_URL: https://api.github.com
     steps:
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-      
-      - name: Check and approve forked workflow runs
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: pip install PyGithub requests
+
+      - name: Run pipeline approval script
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOT_PAT }}
+          USERNAME: "ossama-ferjani"
+          TARGET_REPO: "devops-ci-cd-challenge"
         run: |
-          echo "🔍 Fetching workflow runs for $TARGET_REPO"
-          
-          # First get the workflow ID for the specific workflow name
-          WORKFLOWS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            "$GITHUB_API_URL/repos/$TARGET_REPO/actions/workflows")
-          
-          # Debug output to check structure
-          echo "Available workflows:"
-          echo "$WORKFLOWS" | jq -r '.workflows[] | {name: .name, path: .path, id: .id}'
-          
-          # More carefully match the workflow by name or path
-          WORKFLOW_ID=$(echo "$WORKFLOWS" | jq -r '.workflows[] | select(.name=="'"$TARGET_WORKFLOW"'" or ((.path | type) == "string" and (.path | contains("'"$TARGET_WORKFLOW"'")))) | .id' | head -1)
-          
-          if [ -z "$WORKFLOW_ID" ]; then
-            echo "❌ Could not find workflow with name: $TARGET_WORKFLOW"
-            echo "💡 Getting all waiting runs instead..."
-            
-            # Get all waiting runs if we can't find the specific workflow
-            RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-              "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs?status=waiting")
-          else
-            echo "📋 Found workflow ID: $WORKFLOW_ID"
-            
-            # Get waiting runs for this specific workflow
-            RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-              "$GITHUB_API_URL/repos/$TARGET_REPO/actions/workflows/$WORKFLOW_ID/runs?status=waiting")
-          fi
-          
-          # Check if response contains workflow runs
-          if ! echo "$RESPONSE" | jq -e '.workflow_runs' >/dev/null 2>&1; then
-            echo "⚠️ No workflow runs found in response"
-            echo "Response: $RESPONSE"
-            exit 1
-          fi
-          
-          # Filter for waiting runs
-          RUNS=$(echo "$RESPONSE" | jq -r '.workflow_runs[].id')
-          COUNT=$(echo "$RUNS" | grep -v '^$' | wc -l)
-          
-          echo "🧪 Found $COUNT pending workflow run(s) needing approval."
-          
-          if [ "$COUNT" -eq 0 ]; then
-            echo "No waiting runs to approve."
-            exit 0
-          fi
-          
-          echo "$RUNS" | while read -r RUN_ID; do
-            if [ -n "$RUN_ID" ]; then
-              echo "Getting info for run ID: $RUN_ID"
-              RUN_INFO=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-                "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs/$RUN_ID")
+          python -c '
+          import os
+          import sys
+          import time
+          from github import Github, GithubException
+          import requests
+          import json
+
+          def main():
+              # Initialize the Github client with the provided token
+              token = os.environ["GITHUB_TOKEN"]
+              username = os.environ["USERNAME"]
+              target_repo = os.environ["TARGET_REPO"]
+              repo_full_name = f"{username}/{target_repo}"
               
-              # Check if waiting for approval
-              RUN_STATUS=$(echo "$RUN_INFO" | jq -r '.status')
-              if [ "$RUN_STATUS" != "waiting" ]; then
-                echo "⏭️ Skipping run ID: $RUN_ID (status: $RUN_STATUS, not waiting)"
-                continue
-              fi
+              print(f"Starting pipeline auto-approval for repository: {repo_full_name}")
               
-              # Approve all waiting runs (both fork and non-fork)
-              echo "✅ Approving run ID: $RUN_ID"
-              APPROVAL_RESPONSE=$(curl -s -X POST \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                "$GITHUB_API_URL/repos/$TARGET_REPO/actions/runs/$RUN_ID/approve")
+              g = Github(token)
               
-              # Check approval response
-              if [ -z "$APPROVAL_RESPONSE" ]; then
-                echo "✓ Successfully approved run ID: $RUN_ID"
-              else
-                echo "Response from approval: $APPROVAL_RESPONSE"
-              fi
-            fi
-          done
+              try:
+                  # Get the specific repository
+                  repo = g.get_repo(repo_full_name)
+                  process_repository(g, repo)
+                  
+                  print("Pipeline auto-approval process completed successfully")
+              except Exception as e:
+                  print(f"Error in pipeline auto-approval process: {str(e)}")
+                  sys.exit(1)
+
+          def process_repository(g, repo):
+              owner = repo.owner.login
+              repo_name = repo.name
+              print(f"Processing repository: {owner}/{repo_name}")
+              
+              try:
+                  # Get workflow runs that might need approval
+                  token = os.environ["GITHUB_TOKEN"]
+                  
+                  # Get all workflows in the repository
+                  workflows = list(repo.get_workflows())
+                  print(f"Found {len(workflows)} workflows in {owner}/{repo_name}")
+                  
+                  # Check each workflow for waiting runs
+                  approval_count = 0
+                  for workflow in workflows:
+                      print(f"Checking workflow: {workflow.name}")
+                      
+                      # Get runs with "waiting" status
+                      try:
+                          runs = list(workflow.get_runs(status="waiting"))
+                          print(f"Found {len(runs)} runs potentially awaiting approval for workflow: {workflow.name}")
+                          
+                          # Process each run that might need approval
+                          for run in runs:
+                              if approve_workflow_run(token, owner, repo_name, run.id):
+                                  approval_count += 1
+                      except Exception as e:
+                          print(f"Error checking runs for workflow {workflow.name}: {str(e)}")
+                  
+                  print(f"Total approved pipeline runs: {approval_count}")
+                  
+              except Exception as e:
+                  print(f"Error processing workflows in {owner}/{repo_name}: {str(e)}")
+
+          def approve_workflow_run(token, owner, repo, run_id):
+              headers = {
+                  "Authorization": f"token {token}",
+                  "Accept": "application/vnd.github.v3+json"
+              }
+              
+              # Get pending deployments for the run
+              pending_url = f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/pending_deployments"
+              
+              try:
+                  response = requests.get(pending_url, headers=headers)
+                  
+                  if response.status_code == 200:
+                      pending_deployments = response.json()
+                      
+                      if pending_deployments:
+                          print(f"Approving workflow run #{run_id} in {owner}/{repo}")
+                          
+                          # Extract environment IDs
+                          environment_ids = [deploy["environment"]["id"] for deploy in pending_deployments]
+                          
+                          # Approve all pending deployments
+                          approve_url = f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/pending_deployments"
+                          payload = {
+                              "environment_ids": environment_ids,
+                              "state": "approved",
+                              "comment": "Automatically approved by Pipeline Auto-Approval Bot"
+                          }
+                          
+                          approval_response = requests.post(
+                              approve_url,
+                              headers=headers,
+                              data=json.dumps(payload)
+                          )
+                          
+                          if approval_response.status_code in [200, 201]:
+                              print(f"Successfully approved workflow run #{run_id}")
+                              return True
+                          else:
+                              print(f"Failed to approve workflow run #{run_id}: {approval_response.status_code} - {approval_response.text}")
+                              return False
+                      else:
+                          print(f"No pending deployments found for run #{run_id}")
+                          return False
+                  else:
+                      print(f"Failed to get pending deployments for run #{run_id}: {response.status_code} - {response.text}")
+                      return False
+              except Exception as e:
+                  print(f"Error approving workflow run #{run_id}: {str(e)}")
+                  return False
+
+          if __name__ == "__main__":
+              main()
