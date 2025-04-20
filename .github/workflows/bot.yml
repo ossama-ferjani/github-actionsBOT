@@ -1,3 +1,5 @@
+# File: .github/workflows/auto-approval.yml
+
 name: Pipeline Auto Approval Bot
 
 on:
@@ -24,7 +26,7 @@ jobs:
           USERNAME: "ossama-ferjani"
           TARGET_REPO: "devops-ci-cd-challenge"
         run: |
-          python -c '
+          cat > approve_script.py << 'EOL'
           import os
           import sys
           import time
@@ -141,3 +143,7 @@ jobs:
 
           if __name__ == "__main__":
               main()
+          EOL
+          
+          # Run the Python script
+          python approve_script.py
